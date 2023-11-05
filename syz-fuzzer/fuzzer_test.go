@@ -4,6 +4,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"testing"
@@ -21,6 +22,7 @@ type InputTest struct {
 }
 
 func TestChooseProgram(t *testing.T) {
+	fmt.Println(t)
 	rs := rand.NewSource(0)
 	r := rand.New(rs)
 	target := getTarget(t, targets.TestOS, targets.TestArch64)

@@ -284,10 +284,23 @@ func (inst *instance) Close() {
 
 func (inst *instance) Copy(hostSrc string) (string, error) {
 	baseName := filepath.Base(hostSrc)
+	//fmt.Println("sxq *** baseName:", baseName)
+	// baseName: syz-fuzzer
 	vmDst := filepath.Join(inst.cfg.TargetDir, baseName)
 	inst.ssh("pkill -9 '" + baseName + "'; rm -f '" + vmDst + "'")
 	args := append(vmimpl.SCPArgs(inst.debug, inst.sshKey, inst.targetPort),
 		hostSrc, inst.sshUser+"@"+inst.targetAddr+":"+vmDst)
+	//please print every argv in args
+	// fmt.Println("sxq *** vmipl.SCPArgs:", vmimpl.SCPArgs(inst.debug, inst.sshKey, inst.targetPort))
+	// fmt.Println("sxq *** inst.debug:", inst.debug)
+	// fmt.Println("sxq *** inst.sshKey:", inst.sshKey)
+	// fmt.Println("sxq *** inst.targetPort:", inst.targetPort)
+	// fmt.Println("sxq *** hostSrc:", hostSrc)
+	// fmt.Println("sxq *** inst.sshUser:", inst.sshUser)
+	// fmt.Println("sxq *** inst.targetAddr:", inst.targetAddr)
+	// fmt.Println("sxq *** vmDst:", vmDst)
+	//fmt.Println("sxq *** args:", args)
+	// args: [-P 22 -F /dev/null -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i /home/xuanqing/.ssh/id_rsa /home/xuanqing/code/syz/my-syz/syzkaller/bin/linux_amd64/syz-executor root@192.168.122.211:/home/fuzzdir/syz-executor]
 	cmd := osutil.Command("scp", args...)
 	if inst.debug {
 		log.Logf(0, "running command: scp %#v", args)
@@ -315,7 +328,18 @@ func (inst *instance) Copy(hostSrc string) (string, error) {
 
 func (inst *instance) Run(timeout time.Duration, stop <-chan bool, command string) (
 	<-chan []byte, <-chan error, error) {
+	fmt.Printf("sxq *** timeout: %v\n stop = %v\n", timeout, stop)
 	args := append(vmimpl.SSHArgs(inst.debug, inst.sshKey, inst.targetPort), inst.sshUser+"@"+inst.targetAddr)
+	fmt.Println("sxq *** inst.debug:", inst.debug)
+	fmt.Println("sxq *** inst.sshKey:", inst.sshKey)
+	fmt.Println("sxq *** inst.targetPort:", inst.targetPort)
+	fmt.Println("sxq *** inst.sshUser:", inst.sshUser)
+	fmt.Println("sxq *** inst.targetAddr:", inst.targetAddr)
+	// sxq *** inst.debug: true
+	// sxq *** inst.sshKey: /home/xuanqing/.ssh/id_rsa
+	// sxq *** inst.targetPort: 22
+	// sxq *** inst.sshUser: root
+	// sxq *** inst.targetAddr: 192.168.122.211
 	dmesg, err := vmimpl.OpenRemoteConsole("ssh", args...)
 	if err != nil {
 		return nil, nil, err
@@ -328,6 +352,7 @@ func (inst *instance) Run(timeout time.Duration, stop <-chan bool, command strin
 	}
 
 	args = vmimpl.SSHArgsForward(inst.debug, inst.sshKey, inst.targetPort, inst.forwardPort)
+	fmt.Println("sxq *** inst.forwardPort:", inst.forwardPort)
 	if inst.cfg.Pstore {
 		args = append(args, "-o", "ServerAliveInterval=6")
 		args = append(args, "-o", "ServerAliveCountMax=5")
@@ -337,6 +362,7 @@ func (inst *instance) Run(timeout time.Duration, stop <-chan bool, command strin
 		log.Logf(0, "running command: ssh %#v", args)
 	}
 	cmd := osutil.Command("ssh", args...)
+	fmt.Println("sxq *** cmd:", cmd)
 	cmd.Stdout = wpipe
 	cmd.Stderr = wpipe
 	if err := cmd.Start(); err != nil {
@@ -354,7 +380,7 @@ func (inst *instance) Run(timeout time.Duration, stop <-chan bool, command strin
 	merger := vmimpl.NewOutputMerger(tee)
 	merger.Add("dmesg", dmesg)
 	merger.Add("ssh", rpipe)
-
+	fmt.Printf("sxq *** inst.closed = %v\n", inst.closed)
 	return vmimpl.Multiplex(cmd, merger, dmesg, timeout, stop, inst.closed, inst.debug)
 }
 

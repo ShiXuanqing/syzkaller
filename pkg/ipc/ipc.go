@@ -271,6 +271,7 @@ func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInf
 
 	atomic.AddUint64(&env.StatExecs, 1)
 	if env.cmd == nil {
+		fmt.Printf("sxq *** env.cmd == nil\n") //应该一开始都是这样
 		if p.Target.OS != targets.TestOS && targets.Get(p.Target.OS, p.Target.Arch).HostFuzzer {
 			// The executor is actually ssh,
 			// starting them too frequently leads to timeouts.
@@ -278,12 +279,18 @@ func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInf
 		}
 		tmpDirPath := "./"
 		atomic.AddUint64(&env.StatRestarts, 1)
-		env.cmd, err0 = makeCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath)
+		fmt.Printf("sxq *** env.pid: %v\n", env.pid)
+		// env.inFile是MakeEnv里面设置的
+		env.cmd, err0 = makeCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath) // 这里其实已经start了，但是没有传数据
+		fmt.Printf("sxq *** env.cmd.cmd: %v\n", env.cmd.cmd)
 		if err0 != nil {
 			return
 		}
+	} else {
+		fmt.Printf("sxq *** env.cmd = %v\n", env.cmd)
 	}
-	output, hanged, err0 = env.cmd.exec(opts, progData)
+	fmt.Printf("sxq *** progData: %v\n", progData)
+	output, hanged, err0 = env.cmd.exec(opts, progData) //这里才传了数据
 	if err0 != nil {
 		env.cmd.close()
 		env.cmd = nil
@@ -550,6 +557,12 @@ type callReply struct {
 
 func makeCommand(pid int, bin []string, config *Config, inFile, outFile *os.File, outmem []byte,
 	tmpDirPath string) (*command, error) {
+	// tmpDirPath = "./"
+	// fmt.Printf("sxq *** bin: %v\n", bin)
+	// sxq *** bin: [/home/fuzzdir/syz-executor exec]
+	fmt.Printf("sxq *** inFile: %v\n", inFile) // 输出的是地址
+	fmt.Printf("sxq *** outFile: %v\n", outFile)
+
 	dir, err := os.MkdirTemp(tmpDirPath, "syzkaller-testdir")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %w", err)
@@ -615,6 +628,7 @@ func makeCommand(pid int, bin []string, config *Config, inFile, outFile *os.File
 	cmd.Env = append(append([]string{}, os.Environ()...), "ASAN_OPTIONS=handle_segv=0 allow_user_segv_handler=1")
 	cmd.Stdin = outrp
 	cmd.Stdout = inwp
+	// 看debug信息的，先不管
 	if config.Flags&FlagDebug != 0 {
 		close(c.readDone)
 		cmd.Stderr = os.Stdout
@@ -739,6 +753,7 @@ func (c *command) wait() error {
 }
 
 func (c *command) exec(opts *ExecOpts, progData []byte) (output []byte, hanged bool, err0 error) {
+	fmt.Printf("sxq *** opts.Flags: %v\n", opts.Flags)
 	req := &executeReq{
 		magic:            inMagic,
 		envFlags:         uint64(c.config.Flags),
@@ -749,6 +764,8 @@ func (c *command) exec(opts *ExecOpts, progData []byte) (output []byte, hanged b
 		slowdownScale:    uint64(c.config.Timeouts.Scale),
 		progSize:         uint64(len(progData)),
 	}
+	// fmt.Printf("sxq *** req.syscallTimeoutMS: %v\n", req.syscallTimeoutMS)
+	// fmt.Printf("sxq *** req.programTimeoutMS: %v\n", req.programTimeoutMS)
 	reqData := (*[unsafe.Sizeof(*req)]byte)(unsafe.Pointer(req))[:]
 	if _, err := c.outwp.Write(reqData); err != nil {
 		output = <-c.readDone

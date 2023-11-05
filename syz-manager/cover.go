@@ -4,6 +4,7 @@
 package main
 
 import (
+	"fmt"
 	"sync"
 
 	"github.com/google/syzkaller/pkg/cover"
@@ -31,5 +32,6 @@ func coverToPCs(rg *cover.ReportGenerator, cov []uint32) []uint64 {
 	for _, pc := range cov {
 		pcs = append(pcs, rg.RestorePC(pc))
 	}
+	fmt.Printf("*** sxq1 In coverToPCs() pcs = %v", pcs)
 	return pcs
 }

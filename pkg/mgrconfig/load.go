@@ -39,6 +39,7 @@ type Derived struct {
 }
 
 func LoadData(data []byte) (*Config, error) {
+	fmt.Println("LoadData")
 	cfg, err := LoadPartialData(data)
 	if err != nil {
 		return nil, err
@@ -50,6 +51,7 @@ func LoadData(data []byte) (*Config, error) {
 }
 
 func LoadFile(filename string) (*Config, error) {
+	fmt.Println("LoadFile")
 	cfg, err := LoadPartialFile(filename)
 	if err != nil {
 		return nil, err

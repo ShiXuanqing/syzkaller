@@ -145,6 +145,11 @@ func (pool *Pool) Create(index int) (*Instance, error) {
 		return nil, err
 	}
 	atomic.AddInt32(&pool.activeCount, 1)
+	fmt.Printf("sxq *** impl: %v\n, workdir: %v\n, timeouts: %v\n, index: %v\n", impl, workdir, pool.timeouts, index)
+	// 	sxq *** impl: &{0xc000d5f810 linux 192.168.122.211 22 0 0xc000b85020 false root /home/xuanqing/.ssh/id_rsa 0}
+	// , workdir: /home/xuanqing/code/syz/my-syz/syzkaller/workdir/instance-0
+	// , timeouts: {1 1ns 50ms 5s 5m0s 1h0m0s 6m0s}
+	// , index: 0
 	return &Instance{
 		impl:     impl,
 		workdir:  workdir,

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"sort"
@@ -43,7 +44,8 @@ type Fuzzer struct {
 	noMutate    map[int]bool
 	// The stats field cannot unfortunately be just an uint64 array, because it
 	// results in "unaligned 64-bit atomic operation" errors on 32-bit platforms.
-	stats             []uint64
+	stats []uint64
+	//serv              *RPCServer
 	manager           *rpctype.RPCClient
 	target            *prog.Target
 	triagedCandidates uint32
@@ -145,7 +147,12 @@ func createIPCConfig(features *host.Features, config *ipc.Config) {
 // nolint: funlen
 func main() {
 	debug.SetGCPercent(50)
-
+	//test copy
+	executorBin, err := Copy("syz-executor")
+	if err != nil {
+		log.Logf(1, "%v", err)
+	}
+	fmt.Printf("sxq *** executorBin = %v\n", executorBin)
 	var (
 		flagName     = flag.String("name", "test", "unique name for manager")
 		flagOS       = flag.String("os", runtime.GOOS, "target OS")
@@ -157,10 +164,14 @@ func main() {
 		flagRunTest  = flag.Bool("runtest", false, "enable program testing mode") // used by pkg/runtest
 		flagRawCover = flag.Bool("raw_cover", false, "fetch raw coverage")
 	)
+	// fmt.Printf("*** sxq flagRawCover = %v", *flagRawCover) // false
+	// fmt.Printf("*** sxq *flagManager1 = %v\n", *flagManager) //空
 	defer tool.Init()()
+	// fmt.Printf("*** sxq *flagManager1 = %v\n", *flagManager) //127.0.0.1:44853
 	outputType := parseOutputType(*flagOutput)
 	log.Logf(0, "fuzzer started")
 
+	// find os and arch( .g. linux and amd64)
 	target, err := prog.GetTarget(*flagOS, *flagArch)
 	if err != nil {
 		log.SyzFatalf("%v", err)
@@ -175,8 +186,10 @@ func main() {
 	}
 	timeouts := config.Timeouts
 	sandbox := ipc.FlagsToSandbox(config.Flags)
+	//fmt.Printf("sxq *** sandbox = %v\n", sandbox)  // setuid
 	shutdown := make(chan struct{})
 	osutil.HandleInterrupts(shutdown)
+	// maybe shutdown the vm or entire syzkaller
 	go func() {
 		// Handles graceful preemption on GCE.
 		<-shutdown
@@ -199,7 +212,8 @@ func main() {
 
 	machineInfo, modules := collectMachineInfos(target)
 
-	log.Logf(0, "dialing manager at %v", *flagManager)
+	log.Logf(0, "dialing manager at %v", *flagManager) // 这里的ip端口似乎不是我设置的，且每次执行都会改变（貌似是虚拟机内部的端口，待检验）
+	// 这里建立了rpc
 	manager, err := rpctype.NewRPCClient(*flagManager, timeouts.Scale)
 	if err != nil {
 		log.SyzFatalf("failed to create an RPC client: %v ", err)
@@ -212,25 +226,34 @@ func main() {
 		Modules:     modules,
 	}
 	r := &rpctype.ConnectRes{}
+	// 这里调用了manager的call方法，有些数据回传到r里面
 	if err := manager.Call("Manager.Connect", a, r); err != nil {
 		log.SyzFatalf("failed to call Manager.Connect(): %v ", err)
 	}
+	//fmt.Printf("sxq *** r = %v", r)
 	featureFlags, err := csource.ParseFeaturesFlags("none", "none", true)
 	if err != nil {
 		log.SyzFatalf("%v", err)
 	}
+	//fmt.Printf("sxq ** r.CoverFilterBitmap = %v", r.CoverFilterBitmap)
+	// r.CoverFilterBitmap == nil
 	if r.CoverFilterBitmap != nil {
 		if err := osutil.WriteFile("syz-cover-bitmap", r.CoverFilterBitmap); err != nil {
 			log.SyzFatalf("failed to write syz-cover-bitmap: %v", err)
 		}
 	}
+	//fmt.Printf("sxq ** r.CheckResultp = %v", r.CheckResult)
+	// r.CheckResult == nil
 	if r.CheckResult == nil {
 		checkArgs.gitRevision = r.GitRevision
 		checkArgs.targetRevision = r.TargetRevision
+		// 上面这两个参数不重要
 		checkArgs.enabledCalls = r.EnabledCalls
+		fmt.Printf("sxq *** checkArgs.enabledCalls = %v\n", r.EnabledCalls) // 输出的似乎是call的编号
 		checkArgs.allSandboxes = r.AllSandboxes
+		// fmt.Printf("sxq *** checkArgs.allSandboxes = %v\n", r.AllSandboxes) //Print false
 		checkArgs.featureFlags = featureFlags
-		r.CheckResult, err = checkMachine(checkArgs)
+		r.CheckResult, err = checkMachine(checkArgs) // 看来是这里检查了测试机上的enable call
 		if err != nil {
 			if r.CheckResult == nil {
 				r.CheckResult = new(rpctype.CheckArgs)
@@ -238,6 +261,7 @@ func main() {
 			r.CheckResult.Error = err.Error()
 		}
 		r.CheckResult.Name = *flagName
+		fmt.Printf("sxq *** r.CheckResult.Name = %v\n", r.CheckResult.Name) // vm-0
 		if err := manager.Call("Manager.Check", r.CheckResult, nil); err != nil {
 			log.SyzFatalf("Manager.Check call failed: %v", err)
 		}
@@ -251,9 +275,11 @@ func main() {
 		}
 	}
 	log.Logf(0, "syscalls: %v", len(r.CheckResult.EnabledCalls[sandbox]))
+	fmt.Printf("***")
 	for _, feat := range r.CheckResult.Features.Supported() {
 		log.Logf(0, "%v: %v", feat.Name, feat.Reason)
 	}
+	fmt.Printf("***")
 	createIPCConfig(r.CheckResult.Features, config)
 
 	if *flagRunTest {
@@ -284,6 +310,7 @@ func main() {
 	gateCallback := fuzzer.useBugFrames(r, *flagProcs)
 	fuzzer.gate = ipc.NewGate(2**flagProcs, gateCallback)
 
+	// 看上去像是处理candidate的
 	for needCandidates, more := true, true; more; needCandidates = false {
 		more = fuzzer.poll(needCandidates, nil)
 		// This loop lead to "no output" in qemu emulation, tell manager we are not dead.
@@ -307,6 +334,8 @@ func main() {
 			log.SyzFatalf("failed to create proc: %v", err)
 		}
 		fuzzer.procs = append(fuzzer.procs, proc)
+		// 并发执行
+		fmt.Printf("sxq *** proc.pid = %v\n", proc.pid)
 		go proc.loop()
 	}
 
@@ -375,6 +404,7 @@ func (fuzzer *Fuzzer) filterDataRaceFrames(frames []string) {
 	log.Logf(0, "%s", output)
 }
 
+// 定时唤醒poll
 func (fuzzer *Fuzzer) pollLoop() {
 	var execTotal uint64
 	var lastPoll time.Time
@@ -629,4 +659,131 @@ func parseOutputType(str string) OutputType {
 		log.SyzFatalf("-output flag must be one of none/stdout/dmesg/file")
 		return OutputNone
 	}
+}
+
+// func (fuzzer *Fuzzer) runInstanceInner1() () {
+// 	fuzzerBin, err := inst.Copy(mgr.cfg.FuzzerBin)
+// 	if err != nil {
+// 		return nil, nil, fmt.Errorf("failed to copy binary: %w", err)
+// 	}
+
+// 	// If ExecutorBin is provided, it means that syz-executor is already in the image,
+// 	// so no need to copy it.
+// 	executorBin := mgr.sysTarget.ExecutorBin
+// 	fmt.Println("sxq *** executorBin:", executorBin)
+// 	if executorBin == "" {
+// 		executorBin, err = inst.Copy(mgr.cfg.ExecutorBin)
+// 		if err != nil {
+// 			return nil, nil, fmt.Errorf("failed to copy binary: %w", err)
+// 		}
+// 	}
+
+// 	fuzzerV := 0
+// 	procs := mgr.cfg.Procs
+// 	if *flagDebug {
+// 		fuzzerV = 100
+// 		procs = 1
+// 	}
+
+// 	// Run the fuzzer binary.
+// 	start := time.Now()
+// 	atomic.AddUint32(&mgr.numFuzzing, 1)
+// 	defer atomic.AddUint32(&mgr.numFuzzing, ^uint32(0))
+
+// 	args := &instance.FuzzerCmdArgs{
+// 		Fuzzer:    fuzzerBin,
+// 		Executor:  executorBin,
+// 		Name:      instanceName,
+// 		OS:        mgr.cfg.TargetOS,
+// 		Arch:      mgr.cfg.TargetArch,
+// 		FwdAddr:   fwdAddr,
+// 		Sandbox:   mgr.cfg.Sandbox,
+// 		Procs:     procs,
+// 		Verbosity: fuzzerV,
+// 		Cover:     mgr.cfg.Cover,
+// 		Debug:     *flagDebug,
+// 		Test:      false,
+// 		Runtest:   false,
+// 		Optional: &instance.OptionalFuzzerArgs{
+// 			Slowdown:   mgr.cfg.Timeouts.Slowdown,
+// 			RawCover:   mgr.cfg.RawCover,
+// 			SandboxArg: mgr.cfg.SandboxArg,
+// 		},
+// 	}
+// 	// 这里！！
+// 	cmd := instance.FuzzerCmd(args)
+// 	outc, errc, err := inst.Run(mgr.cfg.Timeouts.VMRunningTime, mgr.vmStop, cmd)
+// 	if err != nil {
+// 		return nil, nil, fmt.Errorf("failed to run fuzzer: %w", err)
+// 	}
+
+// 	var vmInfo []byte
+// 	rep := inst.MonitorExecution(outc, errc, mgr.reporter, vm.ExitTimeout)
+// 	if rep == nil {
+// 		// This is the only "OK" outcome.
+// 		log.Logf(0, "%s: running for %v, restarting", instanceName, time.Since(start))
+// 	} else {
+// 		vmInfo, err = inst.Info()
+// 		if err != nil {
+// 			vmInfo = []byte(fmt.Sprintf("error getting VM info: %v\n", err))
+// 		}
+// 	}
+
+//		return rep, vmInfo, nil
+//	}
+//
+// 从/vm/isolated/isolated.go里面粘贴过来的
+func Copy(hostSrc string) (string, error) {
+	fmt.Printf("sxq *** hostSrc = %v\n", hostSrc)
+	sshUser := "root"
+	targetAddr := "192.168.123.22"
+	TargetDir := "/home/fuzzdir/"
+	baseName := filepath.Base(hostSrc)
+	vmDst := filepath.Join(TargetDir, baseName)
+
+	// Execute the remote command to kill processes and remove files
+	// remoteCommand := "pkill -9 '" + baseName + "'; rm -f '" + vmDst + "'"
+	// sshCmd := exec.Command("ssh", sshUser+"@"+targetAddr, remoteCommand)
+	// err := sshCmd.Run()
+
+	// if err != nil {
+	// 	return "ssh error ", err
+	// }
+	args := []string{
+		"-P", "22",
+		"-F", "/dev/null",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "BatchMode=yes",
+		"-o", "IdentitiesOnly=yes",
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "ConnectTimeout=10",
+		"-i", "/home/sxq/.ssh/id_rsa",
+		hostSrc,
+		sshUser + "@" + targetAddr + ":" + vmDst,
+	}
+	cmd := osutil.Command("scp", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stdout
+	// if inst.debug {
+	// 	log.Logf(0, "running command: scp %#v", args)
+	// 	cmd.Stdout = os.Stdout
+	// 	cmd.Stderr = os.Stdout
+	// }
+	if err := cmd.Start(); err != nil {
+		return "cmd.Start failed", err
+	}
+	done := make(chan bool)
+	go func() {
+		select {
+		case <-time.After(3 * time.Minute):
+			cmd.Process.Kill()
+		case <-done:
+		}
+	}()
+	err := cmd.Wait()
+	close(done)
+	if err != nil {
+		return "cmd.Wait failed ", err
+	}
+	return vmDst, nil
 }

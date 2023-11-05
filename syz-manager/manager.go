@@ -150,6 +150,7 @@ func main() {
 	}
 	flag.Parse()
 	log.EnableLogCaching(1000, 1<<20)
+
 	cfg, err := mgrconfig.LoadFile(*flagConfig)
 	if err != nil {
 		log.Fatalf("%v", err)
@@ -231,6 +232,7 @@ func RunManager(cfg *mgrconfig.Config) {
 	}
 
 	go func() {
+		// 感觉这里是一个计时器，定期获取一些信息
 		for lastTime := time.Now(); ; {
 			time.Sleep(10 * time.Second)
 			now := time.Now()
@@ -383,6 +385,7 @@ func (mgr *Manager) vmLoop() {
 				atomic.AddUint32(&mgr.numReproducing, 1)
 				log.Logf(0, "loop: starting repro of '%v' on instances %+v", crash.Title, vmIndexes)
 				go func() {
+					// 复现crash
 					reproDone <- mgr.runRepro(crash, vmIndexes, instances.Put)
 				}()
 			}
@@ -393,6 +396,7 @@ func (mgr *Manager) vmLoop() {
 				}
 				log.Logf(1, "loop: starting instance %v", *idx)
 				go func() {
+					// 这里要启动fuzzer了
 					crash, err := mgr.runInstance(*idx)
 					runDone <- &RunResult{*idx, crash, err}
 				}()
@@ -740,6 +744,8 @@ func (mgr *Manager) runInstance(index int) (*Crash, error) {
 	mgr.checkUsedFiles()
 	instanceName := fmt.Sprintf("vm-%d", index)
 
+	// index: 0 instanceName: vm-0
+	fmt.Println("index:", index, "instanceName:", instanceName)
 	rep, vmInfo, err := mgr.runInstanceInner(index, instanceName)
 
 	machineInfo := mgr.serv.shutdownInstance(instanceName)
@@ -765,17 +771,30 @@ func (mgr *Manager) runInstance(index int) (*Crash, error) {
 }
 
 func (mgr *Manager) runInstanceInner(index int, instanceName string) (*report.Report, []byte, error) {
+	// 这个instance在这里是指什么呢，是虚拟机吗
+	// type Instance struct {
+	// 	impl     vmimpl.Instance
+	// 	workdir  string
+	// 	timeouts targets.Timeouts
+	// 	index    int
+	// 	onClose  func()
+	// }
+
+	// 1. Create a new instance.
 	inst, err := mgr.vmPool.Create(index)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create instance: %w", err)
 	}
 	defer inst.Close()
 
+	// 2. 返回一个rpc地址，宿主机和虚拟机都listen同一个端口（可能因为是不同的命名空间）
 	fwdAddr, err := inst.Forward(mgr.serv.port)
+	// fmt.Println("sxq *** fwdAddr:", fwdAddr)
+	// sxq *** fwdAddr:127.0.0.1:45777
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to setup port forwarding: %w", err)
 	}
-
+	// 这里复制了syz-fuzzer，参考这里把复制的工作让fuzzer尝试来做一下。
 	fuzzerBin, err := inst.Copy(mgr.cfg.FuzzerBin)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to copy binary: %w", err)
@@ -784,6 +803,7 @@ func (mgr *Manager) runInstanceInner(index int, instanceName string) (*report.Re
 	// If ExecutorBin is provided, it means that syz-executor is already in the image,
 	// so no need to copy it.
 	executorBin := mgr.sysTarget.ExecutorBin
+	// fmt.Println("sxq *** executorBin:", executorBin)
 	if executorBin == "" {
 		executorBin, err = inst.Copy(mgr.cfg.ExecutorBin)
 		if err != nil {
@@ -823,6 +843,7 @@ func (mgr *Manager) runInstanceInner(index int, instanceName string) (*report.Re
 			SandboxArg: mgr.cfg.SandboxArg,
 		},
 	}
+	// 这里真正运行了fuzzer
 	cmd := instance.FuzzerCmd(args)
 	outc, errc, err := inst.Run(mgr.cfg.Timeouts.VMRunningTime, mgr.vmStop, cmd)
 	if err != nil {
@@ -831,6 +852,7 @@ func (mgr *Manager) runInstanceInner(index int, instanceName string) (*report.Re
 
 	var vmInfo []byte
 	rep := inst.MonitorExecution(outc, errc, mgr.reporter, vm.ExitTimeout)
+	fmt.Println("sxq *** rep:", rep) // report crash 结束manager的时候这个会返回nil
 	if rep == nil {
 		// This is the only "OK" outcome.
 		log.Logf(0, "%s: running for %v, restarting", instanceName, time.Since(start))
@@ -839,6 +861,7 @@ func (mgr *Manager) runInstanceInner(index int, instanceName string) (*report.Re
 		if err != nil {
 			vmInfo = []byte(fmt.Sprintf("error getting VM info: %v\n", err))
 		}
+		fmt.Println("sxq *** vmInfo:", vmInfo)
 	}
 
 	return rep, vmInfo, nil
